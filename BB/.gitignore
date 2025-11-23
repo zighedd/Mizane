@@ -58,6 +58,8 @@ backups/
 doc_harvester_backup_*.tar.gz
 harvester_backup_*.db
 harvester.db.backup*
+### Sauvegardes locales regroupées
+sauvegardes_Mizane/
 *.tar.gz
 *.zip
 
@@ -74,3 +76,7 @@ frontend/harvester-ui/src/components/*.old
 # OS et divers
 .DS_Store
 Thumbs.db
+
+# Données locales volumineuses / artefacts
+embedding_pairs_*.npy
+backend/Textes_juridiques_DZ/

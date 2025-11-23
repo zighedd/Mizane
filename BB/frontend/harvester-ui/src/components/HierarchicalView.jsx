@@ -1,6 +1,6 @@
 import CoursSupremeViewer from "./CoursSupremeViewer";
 import React, { useState, useEffect } from 'react';
-import { ChevronDown, ChevronRight, Plus, Trash2, Settings, Play, Download, Brain, RefreshCw, Filter , Search , FileText, CheckSquare } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plus, Trash2, Settings, Play, Download, Brain, RefreshCw, FileText } from 'lucide-react';
 import { API_URL, JORADP_API_URL } from '../config';
 import Modal from './Modal';
 import { useModal } from '../hooks/useModal';
@@ -45,7 +45,7 @@ const HierarchicalView = () => {
   const [sites, setSites] = useState([]);
   const [coursupremeExpanded, setCoursupremeExpanded] = useState(false);
   const filteredSites = sites.filter(site => site.id !== 2);
-  const { modalState, closeModal, showConfirm, showAlert, showSuccess, showError } = useModal();
+  const { modalState, closeModal, showConfirm, showSuccess, showError } = useModal();
 
   const [filters, setFilters] = useState({
     year: '',
@@ -62,12 +62,10 @@ const HierarchicalView = () => {
   const [selectedDocuments, setSelectedDocuments] = useState({});
   const [currentPage, setCurrentPage] = useState({});
 
-  const [filteredDocuments, setFilteredDocuments] = useState([]);
   const [expandedSites, setExpandedSites] = useState(new Set());
   const [expandedSessions, setExpandedSessions] = useState(new Set());
   const [showNewSessionModal, setShowNewSessionModal] = useState(false);
   const [newSessionSiteId, setNewSessionSiteId] = useState(null);
-  const [newSessionName, setNewSessionName] = useState('');
 
   const [showHarvestDropdown, setShowHarvestDropdown] = useState({});
   const [showDownloadModal, setShowDownloadModal] = useState(false);
@@ -83,6 +81,8 @@ const HierarchicalView = () => {
     dateDebut: '',
     dateFin: ''
   });
+  const [isSearching, setIsSearching] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   const [showMetadataModal, setShowMetadataModal] = useState(false);
   const [selectedDocMetadata, setSelectedDocMetadata] = useState(null);
@@ -139,17 +139,6 @@ const HierarchicalView = () => {
     });
     
     setSelectedDocuments(newSelected);
-  };
-
-
-  const viewDocument = (doc) => {
-    // Si téléchargé, ouvrir via endpoint backend qui sert le fichier local
-    // Sinon, ouvrir l'URL en ligne
-    const url = doc.statuts.downloaded 
-      ? `${JORADP_API_URL}/documents/${doc.id}/view`  // Endpoint à créer côté backend
-      : doc.url;  // URL JORADP en ligne
-    
-    window.open(url, '_blank');
   };
 
 
@@ -255,29 +244,54 @@ const HierarchicalView = () => {
       },
       'Supprimer le document'
     );
-    return;
-    
-    try {
-      const res = await fetch(`${JORADP_API_URL}/documents/${docId}`, {
-        method: 'DELETE'
-      });
-      
-      const data = await res.json();
-      if (data.success) {
-        
-        loadDocuments(sessionId, currentPage[sessionId] || 1);
-      } else {
-        
-      }
-    } catch (err) {
-      
-    }
   };
 
 
   const openDownloadOptions = (sessionId) => {
     setDownloadSessionId(sessionId);
     setShowDownloadModal(true);
+  };
+
+  const exportSelectedPdfs = async (sessionId) => {
+    if (!sessionDocuments[sessionId]) {
+      alert('Aucun document à exporter');
+      return;
+    }
+    const selectedIds = Object.keys(selectedDocuments).filter((id) => selectedDocuments[id]);
+    if (!selectedIds.length) {
+      alert('Aucun document sélectionné');
+      return;
+    }
+    try {
+      setIsExporting(true);
+      const res = await fetch(`${JORADP_API_URL}/documents/export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ document_ids: selectedIds })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showError(err.error || 'Erreur export', 'Export');
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `joradp-documents.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      showSuccess('Export ZIP généré', 'Export');
+    } catch (error) {
+      console.error('Erreur export:', error);
+      showError('Erreur lors de la génération du ZIP', 'Export');
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const executeDownload = async () => {
@@ -387,14 +401,19 @@ const HierarchicalView = () => {
 
   const loadDocuments = async (sessionId, page = 1) => {
     try {
+      setIsSearching(true);
       const params = new URLSearchParams({
         page,
-        per_page: 50,
+        per_page: 20,
         ...(filters.year && {year: filters.year}),
         ...(filters.dateDebut && {date_debut: filters.dateDebut}),
         ...(filters.dateFin && {date_fin: filters.dateFin}),
         ...(filters.status !== 'all' && {status: filters.status}),
-        ...(filters.searchNum && {search_num: filters.searchNum})
+        ...(filters.searchNum && {search_num: filters.searchNum}),
+        ...(filters.keywordsTous && {keywords_tous: filters.keywordsTous}),
+        ...(filters.keywordsUnDe && {keywords_un_de: filters.keywordsUnDe}),
+        ...(filters.keywordsExclut && {keywords_exclut: filters.keywordsExclut}),
+        ...(filters.searchSemantique && {search_semantique: filters.searchSemantique})
       });
       
       const res = await fetch(`${API_URL}/sessions/${sessionId}/documents?${params}`);
@@ -413,7 +432,9 @@ const HierarchicalView = () => {
       }
     } catch (err) {
       console.error('❌ Erreur chargement documents:', err);
-      alert('Erreur: ' + err.message);
+      showError('Erreur lors de la recherche', 'Recherche');
+    } finally {
+      setIsSearching(false);
     }
   };
 
@@ -464,28 +485,6 @@ const HierarchicalView = () => {
 
 
 
-
-  const analyzePhase = async (sessionId) => {
-    if (!window.confirm("Lancer l'analyse IA ? Cela peut prendre plusieurs minutes.")) {
-      return;
-    }
-
-    try {
-      const res = await fetch(`${API_URL}/harvest/${sessionId}/analyze`, {
-        method: 'POST'
-      });
-
-      const data = await res.json();
-      if (data.success) {
-        alert(`Analyse IA: ${data.analyzed} succès, ${data.failed || 0} échecs`);
-        loadSessions(Object.keys(sessionsData)[0]);
-      } else {
-        alert(data.error || 'Erreur analyse');
-      }
-    } catch (err) {
-
-    }
-  };
 
   const batchExtractText = async (sessionId) => {
     const selectedIds = Object.keys(selectedDocuments).filter(id => selectedDocuments[id]);
@@ -558,26 +557,6 @@ const HierarchicalView = () => {
       'Analyse IA'
     );
   };
-
-  const downloadPhase = async (sessionId) => {
-    try {
-      const res = await fetch(`${API_URL}/harvest/${sessionId}/download`, {
-        method: 'POST'
-      });
-      
-      const data = await res.json();
-      if (data.success) {
-        alert(`Téléchargement: ${data.downloaded} succès, ${data.failed || 0} échecs`);
-        loadSessions(Object.keys(sessionsData)[0]); // Recharger
-      } else {
-        alert(data.error || 'Erreur téléchargement');
-      }
-    } catch (err) {
-      
-    }
-  };
-
-
 
   const openAdvancedHarvest = (sessionId) => {
     setAdvancedHarvestSessionId(sessionId);
@@ -779,19 +758,7 @@ const HierarchicalView = () => {
                   </div>
                 </div>
                 
-                <div className="flex items-center gap-4">
-                  <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm">
-                    {site.nb_sessions} sessions
-                  </span>
-                  <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm">
-                    {site.nb_documents} docs
-                  </span>
-                  <span className={`px-3 py-1 rounded-full text-sm ${
-                    site.status === 'running' ? 'bg-orange-100 text-orange-800' : 'bg-gray-100 text-gray-800'
-                  }`}>
-                    {site.status === 'running' ? '⏳ En cours' : '✓ Inactif'}
-                  </span>
-                </div>
+                <div className="flex items-center gap-4" />
               </div>
 
               {/* Sessions du site (si déplié) */}
@@ -836,31 +803,22 @@ const HierarchicalView = () => {
                             <ChevronRight size={16} />
                           }
                           <span className="font-medium">{session.session_name}</span>
-                          <span className={`px-2 py-0.5 rounded text-xs ${
-                            session.status === 'running' ? 'bg-orange-100 text-orange-800' :
-                            session.status === 'completed' ? 'bg-green-100 text-green-800' :
-                            session.status === 'cancelled' ? 'bg-red-100 text-red-800' :
-                            'bg-gray-100 text-gray-800'
-                          }`}>
+                          <span className="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-800">
                             {session.status}
                           </span>
                         </div>
                         
-                        <div className="flex gap-3 text-xs">
-                          <span>Collecte: {session.phases.collect.done}/{session.phases.collect.total}</span>
-                          <span>Téléchargement: {session.phases.download.done}/{session.phases.download.total}</span>
-                          <span>IA: {session.phases.analyze.done}/{session.phases.analyze.total}</span>
-                        </div>
+                        <div className="flex gap-3 text-xs" />
                       </div>
 
                       {/* Détails session (si déplié) */}
                       {expandedSessions.has(session.id) && (
                         <div className="mt-3 pl-6 space-y-2">
-                          <div className="flex gap-2">
-                            {/* Bouton Moissonnage avec dropdown */}
-                            <div className="relative">
-                              <button 
-                                onClick={() => setShowHarvestDropdown(prev => ({...prev, [session.id]: !prev[session.id]}))}
+                            <div className="flex gap-2">
+                              {/* Bouton Moissonnage avec dropdown */}
+                              <div className="relative">
+                                <button 
+                                  onClick={() => setShowHarvestDropdown(prev => ({...prev, [session.id]: !prev[session.id]}))}
                                 className="flex items-center gap-1 px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600">
                                 <RefreshCw size={12} />
                                 Moissonnage
@@ -901,17 +859,24 @@ const HierarchicalView = () => {
                                 </div>
                               )}
                             </div>
+                              <button
+                                onClick={() => openDownloadOptions(session.id)}
+                                className="flex items-center gap-1 px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600">
+                                <Download size={12} />
+                                Télécharger
+                              </button>
                             <button
-                              onClick={() => openDownloadOptions(session.id)}
-                              className="flex items-center gap-1 px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600">
+                              onClick={() => exportSelectedPdfs(session.id)}
+                              disabled={isExporting}
+                              className={`flex items-center gap-1 px-2 py-1 rounded text-xs text-white ${isExporting ? 'bg-emerald-300' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
                               <Download size={12} />
-                              Télécharger
+                              {isExporting ? 'Export...' : 'Export PDF (R2)'}
                             </button>
-                            <button
-                              onClick={() => batchExtractText(session.id)}
-                              className="flex items-center gap-1 px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600">
-                              <FileText size={12} />
-                              Extraire
+                              <button
+                                onClick={() => batchExtractText(session.id)}
+                                className="flex items-center gap-1 px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600">
+                                <FileText size={12} />
+                                Extraire
                             </button>
                             <button
                               onClick={() => batchAnalyzeDocuments(session.id)}
@@ -930,10 +895,7 @@ const HierarchicalView = () => {
                               Supprimer
                             </button>
                           </div>
-                          <p className="text-xs text-gray-600">
-                            📄 {session.nb_documents} documents | 
-                            📅 Créée le {new Date(session.created_at).toLocaleDateString()}
-                          </p>
+                          <div className="text-xs text-gray-600" />
                           
                           {/* Barre de filtres */}
                           <div className="mt-3 bg-gray-50 p-3 rounded border">
@@ -1041,8 +1003,9 @@ const HierarchicalView = () => {
                             <div className="flex gap-2 mt-2">
                               <button
                                 onClick={() => loadDocuments(session.id, 1)}
-                                className="px-4 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600 font-medium">
-                                🔍 Rechercher
+                                disabled={isSearching}
+                                className={`px-4 py-1 rounded text-xs font-medium text-white ${isSearching ? 'bg-blue-300' : 'bg-blue-500 hover:bg-blue-600'}`}>
+                                {isSearching ? '⏳ Recherche...' : '🔍 Rechercher'}
                               </button>
                               <button
                                 onClick={() => {
@@ -1052,6 +1015,9 @@ const HierarchicalView = () => {
                                 className="px-4 py-1 text-xs text-blue-600 hover:text-blue-800">
                                 ↻ Réinitialiser
                               </button>
+                              <div className="text-xs text-gray-600 flex items-center">
+                                Résultats : {sessionDocuments[session.id]?.pagination?.total ?? 0}
+                              </div>
                             </div>
                           </div>
                           
@@ -1071,6 +1037,7 @@ const HierarchicalView = () => {
                                       </th>
                                       <th className="p-2 text-left">Année</th>
                                       <th className="p-2 text-left">N°</th>
+                                      <th className="p-2 text-left">Score</th>
                                       <th className="p-2 text-left">Date Publication</th>
                                       <th className="p-2 text-center">Collecté</th>
                                       <th className="p-2 text-center">Téléchargé</th>
@@ -1093,6 +1060,7 @@ const HierarchicalView = () => {
                                         </td>
                                         <td className="p-2">{doc.date || '-'}</td>
                                         <td className="p-2 font-mono">{doc.numero}</td>
+                                        <td className="p-2 font-mono">{doc.similarity != null ? doc.similarity.toFixed(3) : '-'}</td>
                                         <td className="p-2">{doc.publication_date || "-"}</td>
                                         <td className="p-2 text-center">
                                           {doc.statuts.collected === true ? '✅' : 
