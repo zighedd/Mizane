@@ -86,7 +86,11 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
     keywordsExclusive: '',
     decisionNumber: '',
     dateFrom: '',
-    dateTo: ''
+    dateTo: '',
+    chambersOr: [],
+    chambersInclusive: [],
+    themesOr: [],
+    themesInclusive: []
   });
   const [isSearching, setIsSearching] = useState(false);
   const [languageScope, setLanguageScope] = useState('both');
@@ -94,6 +98,21 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
   const [searchScoreMap, setSearchScoreMap] = useState(new Map());
   const [searchResultsSnapshot, setSearchResultsSnapshot] = useState(null);
   const [searchResultCount, setSearchResultCount] = useState(0);
+  const [appliedSearchTerm, setAppliedSearchTerm] = useState('');
+  const [appliedFilters, setAppliedFilters] = useState({
+    keywordsInclusive: '',
+    keywordsOr: '',
+    keywordsExclusive: '',
+    decisionNumber: '',
+    dateFrom: '',
+    dateTo: '',
+    chambersOr: [],
+    chambersInclusive: [],
+    themesOr: [],
+    themesInclusive: []
+  });
+  const [searchTriggered, setSearchTriggered] = useState(false);
+  const [semanticCache, setSemanticCache] = useState(null);
   const [semanticStats, setSemanticStats] = useState({
     count: 0,
     minScore: null,
@@ -104,6 +123,27 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
   const [semanticLimit, setSemanticLimit] = useState(SEMANTIC_ITEM_LIMIT);
   const [semanticThreshold, setSemanticThreshold] = useState(SEMANTIC_SCORE_THRESHOLD);
   const [currentPage, setCurrentPage] = useState(1);
+  const [availableChambers, setAvailableChambers] = useState([]);
+  const [availableThemes, setAvailableThemes] = useState([]);
+  const [resetCounter, setResetCounter] = useState(0);
+
+  const decisionsById = useMemo(() => {
+    const map = new Map();
+    decisions.forEach((d) => map.set(d.id, d));
+    return map;
+  }, [decisions]);
+
+  useEffect(() => {
+    fetch(`${COURSUPREME_API_URL}/chambers`)
+      .then((res) => res.json())
+      .then((data) => setAvailableChambers(data.chambers || []))
+      .catch(() => setAvailableChambers([]));
+
+    fetch(`${COURSUPREME_API_URL}/themes/all`)
+      .then((res) => res.json())
+      .then((data) => setAvailableThemes(data.themes || []))
+      .catch(() => setAvailableThemes([]));
+  }, []);
 
   // Modal states
   const [confirmModal, setConfirmModal] = useState({
@@ -144,15 +184,6 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
 
   const semanticHasNumericScores = searchScoreMap.size > 0 && Array.from(searchScoreMap.values()).some(value => typeof value === 'number');
   const showSemanticStats = semanticStats.count > 0 || semanticHasNumericScores;
-
-  useEffect(() => {
-    if (semanticStats.count === 0) return;
-    setSemanticStats((prev) => ({
-      ...prev,
-      scoreThreshold: semanticThreshold,
-      limit: semanticLimit,
-    }));
-  }, [semanticLimit, semanticThreshold, semanticStats.count]);
 
   useEffect(() => {
     fetchDecisions();
@@ -198,22 +229,29 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
   );
 
   const applyFiltersAndSort = useCallback(() => {
+    // Tant qu'aucune recherche n'est validée, on laisse la liste complète.
+    if (!searchTriggered) {
+      setSearchResultCount(decisions.length);
+      sortDecisions(decisions);
+      return;
+    }
+
     let filtered = [...decisions];
 
-    // Recherche simple
-    if (searchTerm) {
-      const lowerSearch = searchTerm.toLowerCase();
+    // Recherche simple : utiliser la dernière requête appliquée, pas la saisie en cours.
+    if (appliedSearchTerm) {
+      const lowerSearch = appliedSearchTerm.toLowerCase();
       filtered = filtered.filter(
         (d) =>
           d.decision_number?.toLowerCase().includes(lowerSearch) ||
-          d.decision_date?.includes(searchTerm),
+          d.decision_date?.includes(appliedSearchTerm),
       );
     }
 
     // Filtres avancés
-    if (filters.decisionNumber) {
+    if (appliedFilters.decisionNumber) {
       filtered = filtered.filter((d) =>
-        d.decision_number?.toLowerCase().includes(filters.decisionNumber.toLowerCase()),
+        d.decision_number?.toLowerCase().includes(appliedFilters.decisionNumber.toLowerCase()),
       );
     }
 
@@ -253,19 +291,19 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
       }
     };
 
-    if (filters.keywordsInclusive) {
-      filtered = applyKeywordCondition(filters.keywordsInclusive, 'inclusive');
+    if (appliedFilters.keywordsInclusive) {
+      filtered = applyKeywordCondition(appliedFilters.keywordsInclusive, 'inclusive');
     }
 
-    if (filters.keywordsExclusive) {
-      filtered = applyKeywordCondition(filters.keywordsExclusive, 'exclusive');
+    if (appliedFilters.keywordsExclusive) {
+      filtered = applyKeywordCondition(appliedFilters.keywordsExclusive, 'exclusive');
     }
 
-    if (filters.keywordsOr) {
-      filtered = applyKeywordCondition(filters.keywordsOr, 'or');
+    if (appliedFilters.keywordsOr) {
+      filtered = applyKeywordCondition(appliedFilters.keywordsOr, 'or');
     }
 
-    const fromIso = toIsoFromFilterDate(filters.dateFrom);
+    const fromIso = toIsoFromFilterDate(appliedFilters.dateFrom);
     if (fromIso) {
       filtered = filtered.filter((d) => {
         const decisionIso = toIsoFromDecisionDate(d.decision_date);
@@ -273,7 +311,7 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
       });
     }
 
-    const toIso = toIsoFromFilterDate(filters.dateTo, true);
+    const toIso = toIsoFromFilterDate(appliedFilters.dateTo, true);
     if (toIso) {
       filtered = filtered.filter((d) => {
         const decisionIso = toIsoFromDecisionDate(d.decision_date);
@@ -283,7 +321,7 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
 
     setSearchResultCount(filtered.length);
     sortDecisions(filtered);
-  }, [decisions, filters, searchTerm, sortDecisions]);
+  }, [decisions, appliedFilters, appliedSearchTerm, searchTriggered, sortDecisions]);
 
   useEffect(() => {
     if (activeSearchIds !== null) {
@@ -315,17 +353,53 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
       keywordsExclusive: '',
       decisionNumber: '',
       dateFrom: '',
-      dateTo: ''
+      dateTo: '',
+      chambersOr: [],
+      chambersInclusive: [],
+      themesOr: [],
+      themesInclusive: []
+    });
+    setAppliedSearchTerm('');
+    setAppliedFilters({
+      keywordsInclusive: '',
+      keywordsOr: '',
+      keywordsExclusive: '',
+      decisionNumber: '',
+      dateFrom: '',
+      dateTo: '',
+      chambersOr: [],
+      chambersInclusive: [],
+      themesOr: [],
+      themesInclusive: []
     });
     setLanguageScope('both');
     setShowAdvancedSearch(false);
+    setSearchTriggered(false);
+    setResetCounter((n) => n + 1);
   };
 
   const fetchDecisions = async () => {
     try {
       const response = await fetch(`${COURSUPREME_API_URL}/decisions/status`);
       const data = await response.json();
-      setDecisions(data.decisions);
+      const normalized = (data.decisions || []).map((decision) => {
+        const status =
+          decision.status ||
+          decision.statuts ||
+          {
+            downloaded: 'missing',
+            translated: 'missing',
+            analyzed: 'missing',
+            embeddings: 'missing'
+          };
+        return {
+          ...decision,
+          status,
+          chambers: Array.isArray(decision.chambers) ? decision.chambers : [],
+          themes: Array.isArray(decision.themes) ? decision.themes : []
+        };
+      });
+      setDecisions(normalized);
       setLoading(false);
     } catch (error) {
       console.error('Erreur:', error);
@@ -334,6 +408,10 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
   };
 
   const resetSemanticState = () => {
+    setSemanticCache(null);
+    setSearchScoreMap(new Map());
+    setSearchResultsSnapshot(null);
+    setActiveSearchIds(null);
     setSemanticStats({
       count: 0,
       minScore: null,
@@ -343,67 +421,186 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
     });
   };
 
-  const runSearch = () => {
-    const hasSearchTerm = Boolean(searchTerm && searchTerm.trim());
+  const applySemanticFilters = useCallback(() => {
+    // On n'applique les résultats sémantiques que si une recherche est réellement active.
+    if (!searchTriggered) return;
+    if (!semanticCache || !Array.isArray(semanticCache.results) || semanticCache.results.length === 0) {
+      return;
+    }
+    const filtered = semanticCache.results
+      .map((item) => ({ ...decisionsById.get(item.id), ...item }))
+      .filter((item) => typeof item.score === 'number' && item.score >= semanticThreshold);
+    const limited = filtered.slice(0, semanticLimit);
+    const ids = new Set(limited.map((item) => item.id));
+    const scoreMap = new Map(semanticCache.results.map((item) => [item.id, item.score]));
+
+    setSearchResultsSnapshot(limited);
+    setActiveSearchIds(ids);
+    setSearchScoreMap(scoreMap);
+    setSemanticStats({
+      count: limited.length,
+      minScore: limited.length ? limited[limited.length - 1].score : null,
+      maxScore: limited.length ? limited[0].score : (semanticCache.results[0]?.score ?? null),
+      scoreThreshold: semanticThreshold,
+      limit: semanticLimit
+    });
+    setSearchResultCount(limited.length);
+
+    const matches = ids.size ? filtered.filter((decision) => ids.has(decision.id)) : [];
+    sortDecisions(matches, scoreMap);
+  }, [semanticCache, semanticLimit, semanticThreshold, decisionsById, searchTriggered, sortDecisions]);
+
+  useEffect(() => {
+    if (semanticStats.count === 0) return;
+    setSemanticStats((prev) => ({
+      ...prev,
+      scoreThreshold: semanticThreshold,
+      limit: semanticLimit,
+    }));
+  }, [semanticLimit, semanticThreshold, semanticStats.count]);
+
+  useEffect(() => {
+    applySemanticFilters();
+  }, [applySemanticFilters]);
+
+  const runSearch = (options = {}) => {
+    const currentFilters = options.filters ?? filters;
+    const rawTerm = options.searchTerm ?? searchTerm;
+    const trimmed = (rawTerm || '').trim();
+    const hasSearchTerm = Boolean(trimmed);
     const hasAdvancedFilters = Boolean(
-      filters.keywordsInclusive ||
-      filters.keywordsOr ||
-      filters.keywordsExclusive ||
-      filters.decisionNumber ||
-      filters.dateFrom ||
-      filters.dateTo
+      currentFilters.keywordsInclusive ||
+      currentFilters.keywordsOr ||
+      currentFilters.keywordsExclusive ||
+      currentFilters.decisionNumber ||
+      currentFilters.dateFrom ||
+      currentFilters.dateTo ||
+      (currentFilters.chambersOr && currentFilters.chambersOr.length) ||
+      (currentFilters.chambersInclusive && currentFilters.chambersInclusive.length) ||
+      (currentFilters.themesOr && currentFilters.themesOr.length) ||
+      (currentFilters.themesInclusive && currentFilters.themesInclusive.length)
     );
+
+    if (!hasSearchTerm && !hasAdvancedFilters) {
+      setSearchTriggered(false);
+      setAppliedSearchTerm('');
+      setAppliedFilters({
+        keywordsInclusive: '',
+        keywordsOr: '',
+        keywordsExclusive: '',
+        decisionNumber: '',
+        dateFrom: '',
+        dateTo: '',
+        chambersOr: [],
+        chambersInclusive: [],
+        themesOr: [],
+        themesInclusive: []
+      });
+      setActiveSearchIds(null);
+      setSearchScoreMap(new Map());
+      setSearchResultsSnapshot(null);
+      resetSemanticState();
+      applyFiltersAndSort();
+      setIsSearching(false);
+      return;
+    }
+
+    // Une recherche est effectivement demandée : on fige l'état courant.
+    setSearchTriggered(true);
+    setAppliedSearchTerm(trimmed);
+    setAppliedFilters({ ...currentFilters });
 
     setIsSearching(true);
     const finalize = () => {
       setIsSearching(false);
     };
 
-    if (!hasSearchTerm && !hasAdvancedFilters) {
-      setActiveSearchIds(null);
-      setSearchScoreMap(new Map());
-      setSearchResultsSnapshot(null);
-      resetSemanticState();
-      applyFiltersAndSort();
-      finalize();
-      return;
-    }
+    const tokens = hasSearchTerm ? trimmed.split(/\s+/).filter(Boolean) : [];
 
     if (hasSearchTerm && !hasAdvancedFilters) {
+      // Requête courte (un seul mot) : privilégier la recherche classique par mots-clés.
+      if (tokens.length === 1) {
+        setActiveSearchIds(null);
+        setSearchScoreMap(new Map());
+        setSearchResultsSnapshot(null);
+        resetSemanticState();
+
+        const params = new URLSearchParams();
+        params.append('keywords_or', trimmed);
+        params.append('decision_number', trimmed);
+        params.append('language_scope', languageScope);
+
+        fetch(`${COURSUPREME_API_URL}/search/advanced?${params.toString()}`)
+          .then((res) => res.json())
+          .then((data) => {
+            const results = data.results || [];
+            const ids = new Set(results.map((result) => result.id));
+            setSearchResultsSnapshot(results);
+            setActiveSearchIds(ids);
+            setSearchResultCount(data.count ?? ids.size);
+            sortDecisions(ids.size ? decisions.filter((decision) => ids.has(decision.id)) : [], new Map());
+          })
+          .catch((error) => {
+            console.error('Erreur recherche mots-clés:', error);
+            const emptySet = new Set();
+            setActiveSearchIds(emptySet);
+            setSearchResultsSnapshot([]);
+            setSearchResultCount(0);
+            sortDecisions([]);
+          })
+          .finally(finalize);
+        return;
+      }
+
+      // Sinon : recherche sémantique (cache complet des scores, sans recalcul).
       setActiveSearchIds(null);
       setSearchScoreMap(new Map());
       resetSemanticState();
       const semanticParams = new URLSearchParams({
-        q: searchTerm,
+        q: trimmed,
         language_scope: languageScope,
+        // Le backend renvoie all_results, on garde limit/threshold pour les stats initiales.
         limit: semanticLimit.toString(),
         score_threshold: semanticThreshold.toString()
       });
       fetch(`${COURSUPREME_API_URL}/search/semantic?${semanticParams.toString()}`)
         .then((res) => res.json())
         .then((data) => {
-          const results = data.results || [];
-          const ids = new Set(results.map((result) => result.id));
-          const scoreMap = new Map(results.map((result) => [result.id, result.score]));
-          setSearchResultsSnapshot(results);
-          setActiveSearchIds(ids);
-          setSearchScoreMap(ids.size ? scoreMap : new Map());
-          setSemanticStats({
-            count: data.count ?? results.length,
-            minScore: data.min_score ?? (results.length ? results[results.length - 1].score : null),
-            maxScore: data.max_score ?? (results.length ? results[0].score : null),
-            scoreThreshold: data.score_threshold ?? semanticThreshold,
-            limit: data.limit ?? semanticLimit
+          const allResults = (data.all_results || data.results || []).map((item) => ({
+            ...decisionsById.get(item.id),
+            ...item
+          }));
+          if (!allResults.length) {
+            resetSemanticState();
+            applyFiltersAndSort();
+            return;
+          }
+          const filtered = allResults.filter((item) => typeof item.score === 'number' && item.score >= semanticThreshold);
+          const limited = filtered.slice(0, semanticLimit);
+          const ids = new Set(limited.map((item) => item.id));
+          const scoreMap = new Map(allResults.map((item) => [item.id, item.score]));
+
+          setSemanticCache({
+            query: data.query || searchTerm,
+            results: allResults,
+            count: data.count ?? allResults.length
           });
-          setSearchResultCount(data.count ?? results.length);
-          const matches = ids.size ? decisions.filter((decision) => ids.has(decision.id)) : [];
+          setSearchResultsSnapshot(limited);
+          setActiveSearchIds(ids);
+          setSearchScoreMap(scoreMap);
+          setSemanticStats({
+            count: limited.length,
+            minScore: limited.length ? limited[limited.length - 1].score : null,
+            maxScore: limited.length ? limited[0].score : (allResults[0]?.score ?? null),
+            scoreThreshold: semanticThreshold,
+            limit: semanticLimit
+          });
+          setSearchResultCount(limited.length);
+          const matches = ids.size ? limited.filter((decision) => ids.has(decision.id)) : [];
           sortDecisions(matches, scoreMap);
         })
         .catch((error) => {
           console.error('Erreur recherche sémantique:', error);
-          setActiveSearchIds(null);
-          setSearchScoreMap(new Map());
-          setSearchResultsSnapshot([]);
           resetSemanticState();
           applyFiltersAndSort();
         })
@@ -413,56 +610,88 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
 
     const params = new URLSearchParams();
     if (hasSearchTerm) {
-      params.append('keywords_or', searchTerm);
-      params.append('decision_number', searchTerm);
+      params.append('keywords_or', trimmed);
+      params.append('decision_number', trimmed);
     }
-    if (filters.keywordsInclusive) {
-      params.append('keywords_inc', filters.keywordsInclusive);
+    if (currentFilters.keywordsInclusive) {
+      params.append('keywords_inc', currentFilters.keywordsInclusive);
     }
-    if (filters.keywordsOr) {
-      params.append('keywords_or', filters.keywordsOr);
+    if (currentFilters.keywordsOr) {
+      params.append('keywords_or', currentFilters.keywordsOr);
     }
-    if (filters.keywordsExclusive) {
-      params.append('keywords_exc', filters.keywordsExclusive);
+    if (currentFilters.keywordsExclusive) {
+      params.append('keywords_exc', currentFilters.keywordsExclusive);
     }
-    if (filters.decisionNumber) {
-      params.append('decision_number', filters.decisionNumber);
+    if (currentFilters.decisionNumber) {
+      params.append('decision_number', currentFilters.decisionNumber);
     }
-    if (filters.dateFrom) {
-      params.append('date_from', filters.dateFrom);
+    if (currentFilters.dateFrom) {
+      params.append('date_from', currentFilters.dateFrom);
     }
-    if (filters.dateTo) {
-      params.append('date_to', filters.dateTo);
+    if (currentFilters.dateTo) {
+      params.append('date_to', currentFilters.dateTo);
+    }
+    if (currentFilters.chambersInclusive && currentFilters.chambersInclusive.length) {
+      params.append('chambers_inc', currentFilters.chambersInclusive.join(','));
+    }
+    if (currentFilters.chambersOr && currentFilters.chambersOr.length) {
+      params.append('chambers_or', currentFilters.chambersOr.join(','));
+    }
+    if (currentFilters.themesInclusive && currentFilters.themesInclusive.length) {
+      params.append('themes_inc', currentFilters.themesInclusive.join(','));
+    }
+    if (currentFilters.themesOr && currentFilters.themesOr.length) {
+      params.append('themes_or', currentFilters.themesOr.join(','));
     }
     params.append('language_scope', languageScope);
     setActiveSearchIds(null);
     setSearchScoreMap(new Map());
     resetSemanticState();
 
-    fetch(`${COURSUPREME_API_URL}/search/advanced?${params.toString()}`)
-      .then((res) => res.json())
-      .then((data) => {
-        const results = data.results || [];
-        const ids = new Set(results.map((result) => result.id));
-        setSearchResultsSnapshot(results);
-        setActiveSearchIds(ids);
-        setSearchResultCount(data.count ?? ids.size);
-        const matches = ids.size ? decisions.filter((decision) => ids.has(decision.id)) : [];
-        sortDecisions(matches, new Map());
-      })
+        fetch(`${COURSUPREME_API_URL}/search/advanced?${params.toString()}`)
+          .then((res) => res.json())
+          .then((data) => {
+            const results = (data.results || []).map((item) => ({ ...(decisionsById.get(item.id) || {}), ...item }));
+            const ids = new Set(results.map((result) => result.id));
+            setSearchResultsSnapshot(results);
+            setActiveSearchIds(ids);
+            setSearchResultCount(data.count ?? ids.size);
+            const matches = ids.size ? results.filter((decision) => ids.has(decision.id)) : [];
+            sortDecisions(matches, new Map());
+          })
       .catch((error) => {
         console.error('Erreur recherche:', error);
-        setActiveSearchIds(null);
+        const emptySet = new Set();
+        setActiveSearchIds(emptySet);
         setSearchResultsSnapshot([]);
-        applyFiltersAndSort();
+        setSearchResultCount(0);
+        sortDecisions([]);
       })
       .finally(finalize);
   };
 
   const handleResetAndSearch = () => {
+    // Réinitialise l'UI et lance une recherche vide avec les filtres remis à zéro.
     resetSearchCriteria();
     setActiveSearchIds(null);
-    runSearch();
+    setSearchScoreMap(new Map());
+    setSearchResultsSnapshot(null);
+    setSemanticCache(null);
+    runSearch({
+      searchTerm: '',
+      filters: {
+        keywordsInclusive: '',
+        keywordsOr: '',
+        keywordsExclusive: '',
+        decisionNumber: '',
+        dateFrom: '',
+        dateTo: '',
+        chambersOr: [],
+        chambersInclusive: [],
+        themesOr: [],
+        themesInclusive: []
+      }
+    });
   };
 
   const handleSort = (field) => {
@@ -494,15 +723,22 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
 
   // Indicateur de statut coloré
   const StatusIndicator = ({ status }) => {
+    const normalize = (value) => {
+      if (value === true) return 'complete';
+      if (value === false || value == null) return 'missing';
+      const val = String(value).toLowerCase().trim();
+      if (['success', 'completed', 'complete', 'ok', 'done', 'true', 'downloaded'].includes(val)) return 'complete';
+      if (['partial', 'processing', 'running', 'in_progress'].includes(val)) return 'partial';
+      return 'missing';
+    };
+    const normalized = normalize(status);
     const colors = {
       complete: 'bg-green-500',
       partial: 'bg-orange-500',
       missing: 'bg-red-500'
     };
-
-    return (
-      <div className={`w-3 h-3 rounded-full ${colors[status]}`} title={status} />
-    );
+    const color = colors[normalized] || 'bg-red-500';
+    return <div className={`w-3 h-3 rounded-full ${color}`} title={normalized} />;
   };
 
   const formatBatchMessage = (data, successLabel, total) => {
@@ -883,6 +1119,9 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
           setSemanticLimit={setSemanticLimit}
           semanticThreshold={semanticThreshold}
           setSemanticThreshold={setSemanticThreshold}
+          availableChambers={availableChambers}
+          availableThemes={availableThemes}
+          resetCounter={resetCounter}
         />
         <div className="text-sm text-gray-500 mt-2">
           Documents ramenés: {searchResultCount}
@@ -1006,25 +1245,25 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
                   <td className="p-3 font-medium text-gray-800">{decision.decision_number}</td>
                   <td className="p-3 text-gray-600">{decision.decision_date}</td>
                   <td className="p-3 text-center">
-                    <div className="flex justify-center">
-                      <StatusIndicator status={decision.status.downloaded} />
-                    </div>
-                  </td>
-                  <td className="p-3 text-center">
-                    <div className="flex justify-center">
-                      <StatusIndicator status={decision.status.translated} />
-                    </div>
-                  </td>
-                  <td className="p-3 text-center">
-                    <div className="flex justify-center">
-                      <StatusIndicator status={decision.status.analyzed} />
-                    </div>
-                  </td>
-                  <td className="p-3 text-center">
-                    <div className="flex justify-center">
-                      <StatusIndicator status={decision.status.embeddings} />
-                    </div>
-                  </td>
+            <div className="flex justify-center">
+              <StatusIndicator status={decision.status?.downloaded} />
+            </div>
+          </td>
+          <td className="p-3 text-center">
+            <div className="flex justify-center">
+              <StatusIndicator status={decision.status?.translated} />
+            </div>
+          </td>
+          <td className="p-3 text-center">
+            <div className="flex justify-center">
+              <StatusIndicator status={decision.status?.analyzed} />
+            </div>
+          </td>
+          <td className="p-3 text-center">
+            <div className="flex justify-center">
+              <StatusIndicator status={decision.status?.embeddings} />
+            </div>
+          </td>
                   <td className="p-3">
                     <div className="flex gap-1 justify-center">
                       <button
@@ -1065,7 +1304,7 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
                 <tr className="bg-gray-50 border-b">
                   <td colSpan="8" className="px-3 py-2">
                     <div className="flex gap-4 text-xs text-gray-600">
-                      {decision.chambers.length > 0 && (
+                      {Array.isArray(decision.chambers) && decision.chambers.length > 0 && (
                         <div className="flex gap-1 items-center">
                           <span className="font-semibold">Chambres:</span>
                           {decision.chambers.map((c, i) => (
@@ -1075,7 +1314,7 @@ const DecisionStatusManager = ({ exportEndpoint = 'http://localhost:5001/api/jor
                           ))}
                         </div>
                       )}
-                      {decision.themes.length > 0 && (
+                      {Array.isArray(decision.themes) && decision.themes.length > 0 && (
                         <div className="flex gap-1 items-center">
                           <span className="font-semibold">Thèmes:</span>
                           {decision.themes.map((t, i) => (

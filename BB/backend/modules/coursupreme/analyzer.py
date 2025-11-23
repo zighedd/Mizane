@@ -1,10 +1,15 @@
 import os
 import json
+from pathlib import Path
 from openai import OpenAI
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 
+# Charge la .env locale, puis la .env à la racine du projet si elle existe.
 load_dotenv()
+root_env = Path(__file__).resolve().parents[3] / ".env"
+if root_env.exists():
+    load_dotenv(root_env)
 
 class CourSupremeAnalyzer:
     def __init__(self):

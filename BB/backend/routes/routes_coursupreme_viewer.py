@@ -10,6 +10,33 @@ DB_PATH = '../harvester.db'
 def get_db():
     return sqlite3.connect(DB_PATH)
 
+
+def _parse_id_list(value: str):
+    ids = []
+    for part in (value or '').split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except ValueError:
+            continue
+    return ids
+
+
+def _format_display_date(value: str | None) -> str:
+    if not value:
+        return ''
+    value = value.strip()
+    for fmt in ('%d/%m/%Y', '%d-%m-%Y', '%Y-%m-%d', '%Y/%m/%d'):
+        try:
+            import datetime
+            dt = datetime.datetime.strptime(value, fmt)
+            return dt.strftime('%d-%m-%Y')
+        except ValueError:
+            continue
+    return value.replace('/', '-')
+
 @api_bp.route('/coursupreme/chambers', methods=['GET'])
 def get_chambers():
     """Liste des sections avec statistiques"""
@@ -128,13 +155,19 @@ def search_decisions():
 
 @api_bp.route('/coursupreme/search/advanced', methods=['GET'])
 def advanced_search_decisions():
-    """Recherche avancée avec filtres multiples"""
+    """Ancienne route avancée (désactivée, utiliser modules.coursupreme.routes)."""
+    return jsonify({
+        'error': 'Route legacy désactivée. Utiliser /api/coursupreme/search/advanced (nouveau module).'
+    }), 410
     keywords_inc = request.args.get('keywords_inc', '').strip()
     keywords_exc = request.args.get('keywords_exc', '').strip()
     decision_number = request.args.get('decision_number', '').strip()
     date_from = request.args.get('date_from', '').strip()
     date_to = request.args.get('date_to', '').strip()
-    chambers = request.args.get('chambers', '').strip()
+    chambers_or = _parse_id_list(request.args.get('chambers_or', ''))
+    chambers_inc = _parse_id_list(request.args.get('chambers_inc', ''))
+    themes_or = _parse_id_list(request.args.get('themes_or', ''))
+    themes_inc = _parse_id_list(request.args.get('themes_inc', ''))
     
     conn = get_db()
     conn.row_factory = sqlite3.Row
@@ -152,14 +185,46 @@ def advanced_search_decisions():
     
     conditions = []
     params = []
+    candidate_ids = None
+
+    def intersect_ids(id_set):
+        nonlocal candidate_ids
+        if id_set is None:
+            return
+        if candidate_ids is None:
+            candidate_ids = set(id_set)
+        else:
+            candidate_ids &= set(id_set)
+        return candidate_ids
     
-    if chambers:
-        chamber_ids = chambers.split(',')
-        placeholders = ','.join(['?' for _ in chamber_ids])
-        query += f" LEFT JOIN supreme_court_decision_classifications dc ON d.id = dc.decision_id "
-        conditions.append(f"dc.chamber_id IN ({placeholders})")
-        params.extend(chamber_ids)
-    
+    if chambers_inc:
+        placeholders = ','.join(['?' for _ in chambers_inc])
+        cursor.execute(f"""
+            SELECT decision_id
+            FROM supreme_court_decision_classifications
+            WHERE chamber_id IN ({placeholders})
+            GROUP BY decision_id
+            HAVING COUNT(DISTINCT chamber_id) >= ?
+        """, (*chambers_inc, len(chambers_inc)))
+        intersect_ids({row[0] for row in cursor.fetchall()})
+        if candidate_ids is not None and not candidate_ids:
+            conn.close()
+            return jsonify({'results': [], 'count': 0})
+
+    if themes_inc:
+        placeholders = ','.join(['?' for _ in themes_inc])
+        cursor.execute(f"""
+            SELECT decision_id
+            FROM supreme_court_decision_classifications
+            WHERE theme_id IN ({placeholders})
+            GROUP BY decision_id
+            HAVING COUNT(DISTINCT theme_id) >= ?
+        """, (*themes_inc, len(themes_inc)))
+        intersect_ids({row[0] for row in cursor.fetchall()})
+        if candidate_ids is not None and not candidate_ids:
+            conn.close()
+            return jsonify({'results': [], 'count': 0})
+
     if keywords_inc:
         keywords = keywords_inc.split()
         for kw in keywords:
@@ -175,6 +240,20 @@ def advanced_search_decisions():
     if decision_number:
         conditions.append("d.decision_number LIKE ?")
         params.append(f'%{decision_number}%')
+
+    if candidate_ids is not None:
+        conditions.append(f"d.id IN ({','.join('?' for _ in candidate_ids)})")
+        params.extend(sorted(candidate_ids))
+
+    if chambers_or:
+        placeholders = ','.join(['?' for _ in chambers_or])
+        conditions.append(f"d.id IN (SELECT decision_id FROM supreme_court_decision_classifications WHERE chamber_id IN ({placeholders}))")
+        params.extend(chambers_or)
+
+    if themes_or:
+        placeholders = ','.join(['?' for _ in themes_or])
+        conditions.append(f"d.id IN (SELECT decision_id FROM supreme_court_decision_classifications WHERE theme_id IN ({placeholders}))")
+        params.extend(themes_or)
     
     if date_from:
         conditions.append("d.decision_date >= ?")
@@ -190,7 +269,11 @@ def advanced_search_decisions():
     query += " ORDER BY d.decision_date DESC LIMIT 100"
     
     cursor.execute(query, params)
-    results = [dict(row) for row in cursor.fetchall()]
+    results = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item['decision_date'] = _format_display_date(item.get('decision_date'))
+        results.append(item)
     conn.close()
     
     return jsonify({'results': results, 'count': len(results)})

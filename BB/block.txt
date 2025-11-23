@@ -1,0 +1,331 @@
+1010:                                   </button>
+1011:                                   <button
+1012:                                     onClick={() => {
+1013:                                       if (window.confirm('Moissonner TOUS les documents depuis 1962 ? Cela peut prendre du temps.')) {
+1014:                                         launchPhases(session.id);
+1015:                                       }
+1016:                                       setShowHarvestDropdown(prev => ({...prev, [session.id]: false}));
+1017:                                     }}
+1018:                                     className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 flex items-center gap-2 border-t">
+1019:                                     <Play size={12} className="text-blue-600" />
+1020:                                     Moissonnage complet
+1021:                                   </button>
+1022:                                 </div>
+1023:                               )}
+1024:                             </div>
+1025:                             <button
+1026:                               onClick={() => openDownloadOptions(session.id)}
+1027:                               className="flex items-center gap-1 px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600">
+1028:                               <Download size={12} />
+1029:                               Télécharger
+1030:                             </button>
+1031:                             <button
+1032:                               onClick={() => batchExtractText(session.id)}
+1033:                               className="flex items-center gap-1 px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600">
+1034:                               <FileText size={12} />
+1035:                               Extraire
+1036:                             </button>
+1037:                             <button
+1038:                               onClick={() => batchAnalyzeDocuments(session.id)}
+1039:                               className="flex items-center gap-1 px-2 py-1 bg-purple-500 text-white rounded text-xs hover:bg-purple-600">
+1040:                               <Brain size={12} />
+1041:                               Analyser IA
+1042:                             </button>
+1043:                             <button
+1044:                               onClick={() => batchGenerateEmbeddings(session.id)}
+1045:                               className="flex items-center gap-1 px-2 py-1 bg-indigo-500 text-white rounded text-xs hover:bg-indigo-600">
+1046:                               <Grid3x3 size={12} />
+1047:                               Embeddings
+1048:                             </button>
+1049:                             <button 
+1050:                               onClick={() => openSessionSettings(session.id)}
+1051:                               className="px-2 py-1 bg-gray-500 text-white rounded text-xs hover:bg-gray-600">
+1052:                               Paramètres
+1053:                             </button>
+1054:                             <button 
+1055:                               onClick={() => deleteSession(session.id)}
+1056:                               className="px-2 py-1 bg-red-500 text-white rounded text-xs hover:bg-red-600">
+1057:                               Supprimer
+1058:                             </button>
+1059:                           </div>
+1060:                           {/* Barre de filtres */}
+1061:                           <div className="mt-3 bg-gray-50 p-3 rounded border">
+1062:                             <div className="grid grid-cols-5 gap-2">
+1063:                               <div>
+1064:                                 <label className="block text-xs font-medium mb-1">Année</label>
+1065:                                 <select
+1066:                                   value={draftFilters.year}
+1067:                                   onChange={(e) => setDraftFilters({...draftFilters, year: e.target.value})}
+1068:                                   className="w-full px-2 py-1 border rounded text-xs">
+1069:                                   <option value="">Toutes</option>
+1070:                                   {Array.from({length: 64}, (_, i) => 2025 - i).map(y => (
+1071:                                     <option key={y} value={y}>{y}</option>
+1072:                                   ))}
+1073:                                 </select>
+1074:                               </div>
+1075:                               <div>
+1076:                                 <label className="block text-xs font-medium mb-1">Date début</label>
+1077:                                 <input
+1078:                                   type="date"
+1079:                                   value={draftFilters.dateDebut}
+1080:                                   onChange={(e) => setDraftFilters({...draftFilters, dateDebut: e.target.value})}
+1081:                                   className="w-full px-2 py-1 border rounded text-xs"
+1082:                                 />
+1083:                               </div>
+1084:                               <div>
+1085:                                 <label className="block text-xs font-medium mb-1">Date fin</label>
+1086:                                 <input
+1087:                                   type="date"
+1088:                                   value={draftFilters.dateFin}
+1089:                                   onChange={(e) => setDraftFilters({...draftFilters, dateFin: e.target.value})}
+1090:                                   className="w-full px-2 py-1 border rounded text-xs"
+1091:                                 />
+1092:                               </div>
+1093:                               <div>
+1094:                                 <label className="block text-xs font-medium mb-1">Statut</label>
+1095:                                 <select
+1096:                                   value={draftFilters.status}
+1097:                                   onChange={(e) => setDraftFilters({...draftFilters, status: e.target.value})}
+1098:                                   className="w-full px-2 py-1 border rounded text-xs">
+1099:                                   <option value="all">Tous</option>
+1100:                                   <option value="collected">Collectés</option>
+1101:                                   <option value="downloaded">Téléchargés</option>
+1102:                                   <option value="analyzed">Analysés</option>
+1103:                                 </select>
+1104:                               </div>
+1105:                               <div>
+1106:                                 <label className="block text-xs font-medium mb-1">N° Document</label>
+1107:                                 <input
+1108:                                   type="text"
+1109:                                   value={draftFilters.searchNum}
+1110:                                   onChange={(e) => setDraftFilters({...draftFilters, searchNum: e.target.value})}
+1111:                                   placeholder="Ex: 045"
+1112:                                   className="w-full px-2 py-1 border rounded text-xs"
+1113:                                 />
+1114:                               </div>
+1115:                             </div>
+1116: 
+1117:                             <div className="grid grid-cols-3 gap-2 mt-3">
+1118:                               <div>
+1119:                                 <label className="block text-xs font-medium mb-1">Contient TOUS (ET)</label>
+1120:                                 <input
+1121:                                   type="text"
+1122:                                   value={draftFilters.keywordsTous}
+1123:                                   onChange={(e) => setDraftFilters({...draftFilters, keywordsTous: e.target.value})}
+1124:                                   placeholder="mot1, mot2"
+1125:                                   className="w-full px-2 py-1 border rounded text-xs"
+1126:                                   title="Documents contenant tous ces mots"
+1127:                                 />
+1128:                               </div>
+1129:                               <div>
+1130:                                 <label className="block text-xs font-medium mb-1">Contient UN DE (OU)</label>
+1131:                                 <input
+1132:                                   type="text"
+1133:                                   value={draftFilters.keywordsUnDe}
+1134:                                   onChange={(e) => setDraftFilters({...draftFilters, keywordsUnDe: e.target.value})}
+1135:                                   placeholder="mot1, mot2, mot3"
+1136:                                   className="w-full px-2 py-1 border rounded text-xs"
+1137:                                   title="Documents contenant au moins un de ces mots"
+1138:                                 />
+1139:                               </div>
+1140:                               <div>
+1141:                                 <label className="block text-xs font-medium mb-1">Ne contient pas</label>
+1142:                                 <input
+1143:                                   type="text"
+1144:                                   value={draftFilters.keywordsExclut}
+1145:                                   onChange={(e) => setDraftFilters({...draftFilters, keywordsExclut: e.target.value})}
+1146:                                   placeholder="mot1, mot2"
+1147:                                   className="w-full px-2 py-1 border rounded text-xs"
+1148:                                 />
+1149:                               </div>
+1150:                             </div>
+1151: 
+1152:                             <div className="mt-4 space-y-2">
+1153:                               <label className="block text-xs font-medium mb-1">🔍 Recherche sémantique</label>
+1154:                               <input
+1155:                                 type="text"
+1156:                                 value={draftFilters.searchSemantique}
+1157:                                 onChange={(e) => setDraftFilters({...draftFilters, searchSemantique: e.target.value})}
+1158:                                 placeholder="Ex: accident de circulation"
+1159:                                 className="w-full px-3 py-2 border rounded text-sm bg-purple-50"
+1160:                               />
+1161:                               <button
+1162:                                 onClick={() => handleSemanticSearch(session.id)}
+1163:                                 className="px-3 py-1 bg-purple-600 text-white rounded text-xs hover:bg-purple-700 font-medium">
+1164:                                 🔍 Rechercher sémantique
+1165:                               </button>
+1166:                             </div>
+1167: 
+1168:                             <div className="flex items-center justify-between gap-4 mt-4">
+1169:                               <div className="flex gap-2">
+1170:                                 <button
+1171:                                   onClick={() => handleSearchClick(session.id)}
+1172:                                   className="px-4 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600 font-medium">
+1173:                                   🔍 Rechercher filtres
+1174:                                 </button>
+1175:                                 <button
+1176:                                   onClick={() => handleResetClick(session.id)}
+1177:                                   className="px-4 py-1 text-xs text-blue-600 hover:text-blue-800">
+1178:                                   ↻ Réinitialiser
+1179:                                 </button>
+1180:                               </div>
+1181:                               <div className="flex items-center gap-2 text-xs text-gray-600">
+1182:                                 {sessionLoading && (
+1183:                                   <span className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" aria-hidden="true" />
+1184:                                 )}
+1185:                                 <span>
+1186:                                   Documents remontés: {matchedCount}/{totalAvailable}
+1187:                                 </span>
+1188:                               </div>
+1189:                             </div>
+1190:                           
+1191:                           {/* Tableau des documents */}
+1192:                           {sessionDocs && (
+1193:                             <div className="mt-3">
+1194:                               <div className="overflow-x-auto border rounded">
+1195:                                 <table className="w-full text-xs">
+1196:                                   <thead className="bg-gray-100">
+1197:                                       <tr>
+1198:                                         <th className="p-2 text-left w-8">
+1199:                                         <input
+1200:                                           type="checkbox"
+1201:                                           onChange={() => toggleSelectAll(session.id, visibleDocs)}
+1202:                                           checked={
+1203:                                             visibleDocs.length > 0 &&
+1204:                                             visibleDocs.every((doc) => selectedDocuments[doc.id])
+1205:                                           }
+1206:                                         />
+1207:                                         </th>
+1208:                                         <th className="p-2 text-left">Année</th>
+1209:                                         <th className="p-2 text-left">N°</th>
+1210:                                         <th className="p-2 text-left">Date Publication</th>
+1211:                                         <th className="p-2 text-center">Collecté</th>
+1212:                                         <th className="p-2 text-center">Téléchargé</th>
+1213:                                         <th className="p-2 text-center">Analysé</th>
+1214:                                         <th className="p-2 text-center">Embedding</th>
+1215:                                         <th className="p-2 text-center">Actions</th>
+1216:                                       </tr>
+1217:                                   </thead>
+1218:                                   <tbody>
+1219:                                     {visibleDocs.map((doc) => (
+1220:                                       <tr key={doc.id} className="border-t hover:bg-gray-50">
+1221:                                         <td className="p-2">
+1222:                                           <input
+1223:                                             type="checkbox"
+1224:                                             checked={selectedDocuments[doc.id] || false}
+1225:                                             onChange={(e) => setSelectedDocuments({
+1226:                                               ...selectedDocuments, 
+1227:                                               [doc.id]: e.target.checked
+1228:                                             })}
+1229:                                           />
+1230:                                         </td>
+1231:                                         <td className="p-2">{doc.date || '-'}</td>
+1232:                                         <td className="p-2 font-mono">{doc.numero}</td>
+1233:                                         <td className="p-2">{doc.publication_date || "-"}</td>
+1234:                                         <td className="p-2 text-center">
+1235:                                           {doc.statuts.collected === true ? '✅' : 
+1236:                                            doc.statuts.collected === false ? '❌' : '⏳'}
+1237:                                         </td>
+1238:                                         <td className="p-2 text-center">
+1239:                                           {doc.statuts.downloaded === true ? '✅' : 
+1240:                                            doc.statuts.downloaded === false ? '❌' : '⏳'}
+1241:                                         </td>
+1242:                                         <td className="p-2 text-center">
+1243:                                           {doc.statuts.analyzed === true ? '✅' : 
+1244:                                            doc.statuts.analyzed === false ? '❌' : '⏳'}
+1245:                                         </td>
+1246:                                         <td className="p-2 text-center">
+1247:                                           {doc.statuts.embedded === true ? '✅' : 
+1248:                                            doc.statuts.embedded === false ? '❌' : '⏳'}
+1249:                                         </td>
+1250:                                         <td className="p-2 text-center">
+1251:                                           <button onClick={() => downloadDocument(doc)} className="text-blue-600 hover:text-blue-800 mr-1" title="Télécharger le PDF">↓</button>
+1252:                                           {/* DEBUG */}
+1253:                                           <span style={{display: 'none'}}>{console.log('DOC COMPLET:', JSON.stringify(doc, null, 2))}</span>
+1254:                                           <span style={{display: 'none'}}>{console.log('Champs disponibles:', Object.keys(doc))}</span>
+1255:                                           <DocumentViewerButtons 
+1256:                                             document={{
+1257:                                               ...doc,
+1258:                                               file_path: doc.file_path,
+1259:                                               source_url: doc.url,
+1260:                                               download_status: doc.statuts.downloaded ? 'completed' : 'pending',
+1261:                                               title: doc.titre,
+1262:                                               file_format: doc.file_extension
+1263:                                             }}
+1264:                                           />
+1265:                                           <button 
+1266:                                             onClick={() => viewMetadata(doc)}
+1267:                                             className="text-purple-600 hover:text-purple-800 cursor-pointer mr-1" 
+1268:                                             title="Voir métadonnées">
+1269:                                             ℹ️
+1270:                                           </button>
+1271:                                           <button 
+1272:                                             onClick={() => deleteDocument(doc.id, session.id)}
+1273:                                             className="text-red-600 hover:text-red-800 cursor-pointer" 
+1274:                                             title="Supprimer">
+1275:                                             🗑️
+1276:                                           </button>
+1277:                                         </td>
+1278:                                       </tr>
+1279:                                     ))}
+1280:                                   </tbody>
+1281:                                 </table>
+1282:                               </div>
+1283:                               <div className="flex justify-between items-center mt-2 text-xs">
+1284:                                 <div>
+1285:                                   Page {currentPageNumber} / {totalPages} ({matchedCount} document
+1286:                                   {matchedCount > 1 ? 's' : ''})
+1287:                                 </div>
+1288:                                 <div className="flex gap-2">
+1289:                                   <button
+1290:                                     disabled={currentPageNumber === 1}
+1291:                                     onClick={() => goToPage(session.id, currentPageNumber - 1, searchActive, totalPages)}
+1292:                                     className="px-2 py-1 border rounded disabled:opacity-50 text-xs"
+1293:                                   >
+1294:                                     ← Préc
+1295:                                   </button>
+1296:                                   <button
+1297:                                     disabled={currentPageNumber === totalPages}
+1298:                                     onClick={() => goToPage(session.id, currentPageNumber + 1, searchActive, totalPages)}
+1299:                                     className="px-2 py-1 border rounded disabled:opacity-50 text-xs"
+1300:                                   >
+1301:                                     Suiv →
+1302:                                   </button>
+1303:                                 </div>
+1304:                               </div>
+1305:                             </div>
+1306:                           )}
+1307:                         </div>
+1308:                       )}
+1309:                     </div>
+1310:                   );
+1311:                 })}
+1312:                 {sessionsData[site.id]?.length === 0 && (
+1313:                     <p className="text-gray-500 text-sm italic">Aucune session pour ce site</p>
+1314:                   )}
+1315:                 </div>
+1316:               )}
+1317:             </div>
+1318:           ))}
+1319:         </div>
+1320:       
+1321: 
+1322:       {/* Cour Suprême - Accordéon */}
+1323:       <div className="mt-4">
+1324:         <div className="bg-white rounded-lg shadow">
+1325:           <div 
+1326:             onClick={() => setCoursupremeExpanded(!coursupremeExpanded)}
+1327:             className="flex items-center gap-4 p-4 cursor-pointer hover:bg-gray-50"
+1328:           >
+1329:             {coursupremeExpanded ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
+1330:             
+1331:             <div className="flex items-center gap-3 flex-1">
+1332:               <div className="w-10 h-10 bg-blue-500 rounded flex items-center justify-center text-white text-xl">
+1333:                 ⚖️
+1334:               </div>
+1335:               <div>
+1336:                 <div className="font-bold">Cour Suprême d'Algérie</div>
+1337:                 <div className="text-xs text-gray-500">6 chambres - Décisions de jurisprudence</div>
+1338:               </div>
+1339:             </div>
+1340:             

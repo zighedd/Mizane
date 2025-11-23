@@ -1,6 +1,7 @@
 import os
 
 from dotenv import load_dotenv
+from pathlib import Path
 from flask import Flask, jsonify
 from flask_cors import CORS
 
@@ -14,7 +15,11 @@ from harvest_routes import register_harvest_routes
 from sites_routes import register_sites_routes
 
 CWD = os.path.dirname(os.path.abspath(__file__))
+# Charge d'abord l'éventuelle .env du dossier backend, puis celle à la racine si présente.
 load_dotenv(os.path.join(CWD, ".env"))
+root_env = Path(CWD).resolve().parent / ".env"
+if root_env.exists():
+    load_dotenv(root_env)
 
 app = Flask(__name__)
 CORS(app)
