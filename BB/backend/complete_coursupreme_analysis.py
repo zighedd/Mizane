@@ -10,6 +10,8 @@ import sqlite3
 import time
 from bs4 import BeautifulSoup
 from modules.coursupreme.analyzer import CourSupremeAnalyzer
+from datetime import datetime
+import re
 
 DB_PATH = 'harvester.db'
 
@@ -43,6 +45,41 @@ class CourSupremeCompleter:
         except Exception as e:
             print(f"      ⚠️ Erreur extraction HTML: {e}")
             return ""
+
+    @staticmethod
+    def _normalize_date(value: str | None) -> str | None:
+        """Normaliser une date au format ISO (YYYY-MM-DD) si possible."""
+        if not value:
+            return None
+        candidates = [
+            '%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y',
+            '%Y-%m-%d', '%Y/%m/%d', '%Y.%m.%d',
+            '%m/%d/%Y', '%m-%d-%Y',
+        ]
+        for fmt in candidates:
+            try:
+                dt = datetime.strptime(value, fmt)
+                return dt.strftime('%Y-%m-%d')
+            except ValueError:
+                continue
+        return None
+
+    def extract_date_from_text(self, text: str) -> str | None:
+        """Cherche une date dans le texte (formats JJ/MM/AAAA, JJ-MM-AAAA, AAAA-MM-JJ, etc.)."""
+        if not text:
+            return None
+        # Chercher d'abord une mention explicite de date
+        patterns = [
+            r'\b(\d{1,2}[/-\.]\d{1,2}[/-\.]\d{4})\b',
+            r'\b(\d{4}[/-\.]\d{1,2}[/-\.]\d{1,2})\b',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                normalized = self._normalize_date(match.group(1))
+                if normalized:
+                    return normalized
+        return None
 
     def analyze_decision(self, dec_id, decision):
         """Analyser une décision et mettre à jour la base"""
@@ -93,6 +130,13 @@ class CourSupremeCompleter:
 
         print(f"   ✅ Texte extrait: AR={len(text_ar)} chars, FR={len(text_fr)} chars")
 
+        # Extraire une date si absente
+        extracted_date = None
+        if not decision.get('decision_date'):
+            extracted_date = self.extract_date_from_text(text_fr) or self.extract_date_from_text(text_ar)
+            if extracted_date:
+                print(f"   📅 Date détectée et normalisée: {extracted_date}")
+
         # Analyser avec OpenAI
         print("   🤖 Analyse IA en cours...")
         try:
@@ -130,6 +174,7 @@ class CourSupremeCompleter:
                     entities_fr = ?,
                     embedding_ar = ?,
                     embedding_fr = ?,
+                    decision_date = COALESCE(?, decision_date),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
@@ -143,6 +188,7 @@ class CourSupremeCompleter:
                 results['entities_fr'],
                 results['embedding_ar'],
                 results['embedding_fr'],
+                extracted_date,
                 dec_id
             ))
 

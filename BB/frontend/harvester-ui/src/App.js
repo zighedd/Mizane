@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars, react-hooks/exhaustive-deps */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import HierarchicalView from './components/HierarchicalView';
 import AssistantPanel from './components/AssistantPanel';

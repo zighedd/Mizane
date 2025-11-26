@@ -74,3 +74,7 @@ frontend/harvester-ui/src/components/*.old
 # OS et divers
 .DS_Store
 Thumbs.db
+
+# Données locales volumineuses / artefacts
+embedding_pairs_*.npy
+backend/Textes_juridiques_DZ/

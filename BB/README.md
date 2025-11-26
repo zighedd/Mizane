@@ -29,6 +29,11 @@ npm install
 npm start
 ```
 
+## ℹ️ Cour Suprême (routes API)
+
+- L’endpoint avancé actif est `/api/coursupreme/search/advanced` exposé par `backend/modules/coursupreme/routes.py`.
+- L’ancienne implémentation `backend/routes/routes_coursupreme_viewer.py` est désactivée (renvoie 410 si jamais le blueprint legacy est enregistré). Conserver ce fichier comme archive uniquement.
+
 ## 🛠️ Routines automatisées
 
 - `./scripts/setup_env.sh` remplit `backend/.env` avec tes valeurs (utilise `FORCE=1` pour écraser). Tu peux surcharger chaque clé via la variable d’environnement correspondante (utile quand tu scripts le déploiement).

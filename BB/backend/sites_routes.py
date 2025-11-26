@@ -1,5 +1,67 @@
 from flask import request, jsonify
 import sqlite3
+import math
+
+
+def _safe_split_csv(value: str):
+    if not value:
+        return []
+    return [chunk.strip() for chunk in value.split(',') if chunk.strip()]
+
+
+def _semantic_rank(session_id: int, query: str, limit: int = 500):
+    """Retourne une liste ordonnée (doc_id, score) pour une requête sémantique.
+
+    La fonction reste tolérante : si le modèle ou numpy manquent, on renvoie
+    ([], "message d'erreur") afin que l'appelant puisse afficher un fallback.
+    """
+    try:
+        from analysis import get_embedding_model
+        import numpy as np
+    except Exception as exc:  # numpy ou import indisponible
+        return [], f"embedding non disponible ({exc})"
+
+    model = get_embedding_model()
+    if not model:
+        return [], "Aucun modèle d'embedding disponible"
+
+    try:
+        query_vec = model.encode(query, convert_to_numpy=True, normalize_embeddings=True)
+    except Exception as exc:
+        return [], f"Impossible de générer l'embedding requête : {exc}"
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT d.id, e.embedding, e.dimension
+        FROM document_embeddings e
+        JOIN documents d ON d.id = e.document_id
+        WHERE d.session_id = ? AND e.embedding IS NOT NULL
+        """,
+        (session_id,),
+    )
+
+    scores = []
+    for row in cursor.fetchall():
+        try:
+            emb = np.frombuffer(row["embedding"], dtype=np.float32)
+            if row["dimension"] and emb.shape[0] >= row["dimension"]:
+                emb = emb[: row["dimension"]]
+            if emb.size == 0:
+                continue
+            norm = np.linalg.norm(emb)
+            if norm == 0 or math.isnan(norm):
+                continue
+            emb = emb / norm
+            score = float(np.dot(query_vec, emb))
+            scores.append((row["id"], score))
+        except Exception:
+            continue
+
+    conn.close()
+    scores.sort(key=lambda tup: tup[1], reverse=True)
+    return scores[:limit], None
 
 def get_db_connection():
     conn = sqlite3.connect('harvester.db')
@@ -268,35 +330,40 @@ def register_sites_routes(app):
         """Récupérer les documents d'une session avec pagination"""
         try:
             page = int(request.args.get('page', 1))
-            per_page = int(request.args.get('per_page', 50))
-            
+            per_page = int(request.args.get('per_page', 20))
+
             # Filtres optionnels
             year = request.args.get('year')
             date_debut = request.args.get('date_debut')
             date_fin = request.args.get('date_fin')
             status = request.args.get('status', 'all')
             search_num = request.args.get('search_num')
-            
+            keywords_tous = request.args.get('keywords_tous') or request.args.get('keywordsTous')
+            keywords_un_de = request.args.get('keywords_un_de') or request.args.get('keywordsUnDe')
+            keywords_exclut = request.args.get('keywords_exclut') or request.args.get('keywordsExclut')
+            search_semantique = request.args.get('search_semantique') or request.args.get('searchSemantique')
+
             conn = get_db_connection()
             cursor = conn.cursor()
-            
+
             # Construire la requête avec filtres
             where_clauses = ['d.session_id = ?']
             params = [session_id]
-            
+            join_sql = ""
+
             if year:
                 # Chercher l'année dans l'URL (ex: F1973xxx.pdf)
                 where_clauses.append("d.url LIKE ?")
                 params.append(f'%F{year}%')
-            
+
             if date_debut:
                 where_clauses.append('d.publication_date >= ?')
                 params.append(date_debut)
-            
+
             if date_fin:
                 where_clauses.append('d.publication_date <= ?')
                 params.append(date_fin)
-            
+
             if status != 'all':
                 if status == 'collected':
                     where_clauses.append("d.metadata_collection_status = 'success'")
@@ -304,20 +371,46 @@ def register_sites_routes(app):
                     where_clauses.append("d.download_status = 'success'")
                 elif status == 'analyzed':
                     where_clauses.append("d.ai_analysis_status = 'success'")
-            
+
             if search_num:
                 where_clauses.append('d.url LIKE ?')
                 params.append(f'%{search_num}%')
-            
+
+            # Filtres textuels basés sur les analyses IA (keywords + summary)
+            keyword_fields = [
+                "LOWER(COALESCE(ai.keywords, ''))",
+                "LOWER(COALESCE(ai.summary, ''))",
+                "LOWER(COALESCE(ai.additional_metadata, ''))",
+            ]
+
+            if keywords_tous:
+                join_sql = "LEFT JOIN document_ai_analysis ai ON ai.document_id = d.id"
+                for kw in _safe_split_csv(keywords_tous.lower()):
+                    clause = ' OR '.join([f"{field} LIKE ?" for field in keyword_fields])
+                    where_clauses.append(f"({clause})")
+                    params.extend([f"%{kw}%"] * len(keyword_fields))
+
+            if keywords_un_de:
+                join_sql = "LEFT JOIN document_ai_analysis ai ON ai.document_id = d.id"
+                ors = []
+                kw_params = []
+                for kw in _safe_split_csv(keywords_un_de.lower()):
+                    ors.extend([f"{field} LIKE ?" for field in keyword_fields])
+                    kw_params.extend([f"%{kw}%"] * len(keyword_fields))
+                if ors:
+                    where_clauses.append("(" + " OR ".join(ors) + ")")
+                    params.extend(kw_params)
+
+            if keywords_exclut:
+                join_sql = "LEFT JOIN document_ai_analysis ai ON ai.document_id = d.id"
+                for kw in _safe_split_csv(keywords_exclut.lower()):
+                    for field in keyword_fields:
+                        where_clauses.append(f"{field} NOT LIKE ?")
+                        params.append(f"%{kw}%")
+
             where_sql = ' AND '.join(where_clauses)
-            
-            # Compter le total
-            cursor.execute(f'SELECT COUNT(*) FROM documents d WHERE {where_sql}', params)
-            total = cursor.fetchone()[0]
-            
-            # Récupérer la page
-            offset = (page - 1) * per_page
-            cursor.execute(f"""
+
+            base_select = f"""
                     SELECT 
                         d.id,
                         d.url,
@@ -331,13 +424,27 @@ def register_sites_routes(app):
                         d.file_path,
                         d.text_path
                     FROM documents d
+                    {join_sql}
                     WHERE {where_sql}
-                    ORDER BY d.publication_date DESC, d.url DESC
-                    LIMIT ? OFFSET ?
-                """, params + [per_page, offset])
-            
+            """
+
+            # Si recherche sémantique : on récupère tout et on trie côté Python (pour conserver l'ordre de similarité)
+            if search_semantique:
+                cursor.execute(base_select, params)
+                rows = cursor.fetchall()
+                total_pre_filter = len(rows)
+            else:
+                cursor.execute(f'SELECT COUNT(*) FROM documents d {join_sql} WHERE {where_sql}', params)
+                total = cursor.fetchone()[0]
+                offset = (page - 1) * per_page
+                cursor.execute(
+                    base_select + " ORDER BY d.publication_date DESC, d.url DESC LIMIT ? OFFSET ?",
+                    params + [per_page, offset]
+                )
+                rows = cursor.fetchall()
+
             documents = []
-            for row in cursor.fetchall():
+            for row in rows:
                 # Extraire le numéro depuis l'URL
                 filename = row['url'].split('/')[-1]  # F2024001.pdf
                 num = filename[5:8] if len(filename) > 8 else '000'
@@ -375,20 +482,41 @@ def register_sites_routes(app):
                         'embedded': embedding_status,
                     }
                 })
-            
-            conn.close()
-            
-            return jsonify({
-                'success': True,
-                'documents': documents,
-                'pagination': {
+
+            if search_semantique:
+                scores, sem_error = _semantic_rank(session_id, search_semantique, limit=5000)
+                score_map = {doc_id: score for doc_id, score in scores}
+                documents = [doc for doc in documents if doc['id'] in score_map]
+                documents.sort(key=lambda d: score_map.get(d['id'], 0), reverse=True)
+                total = len(documents)
+                offset = (page - 1) * per_page
+                documents = documents[offset: offset + per_page]
+                for doc in documents:
+                    doc['similarity'] = round(score_map.get(doc['id'], 0.0), 3)
+                pagination_meta = {
+                    'page': page,
+                    'per_page': per_page,
+                    'total': total,
+                    'semantic_query': search_semantique,
+                    'pre_filtered': total_pre_filter,
+                    'semantic_error': sem_error,
+                }
+            else:
+                pagination_meta = {
                     'page': page,
                     'per_page': per_page,
                     'total': total,
                     'total_pages': (total + per_page - 1) // per_page
                 }
+
+            conn.close()
+
+            return jsonify({
+                'success': True,
+                'documents': documents,
+                'pagination': pagination_meta
             })
-            
+
         except Exception as e:
             return jsonify({'error': str(e)}), 500
 

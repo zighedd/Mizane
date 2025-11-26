@@ -13,9 +13,13 @@ import io
 import zipfile
 import time
 from html import unescape
+from dotenv import load_dotenv
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
+root_env = Path(__file__).resolve().parents[3] / ".env"
+if root_env.exists():
+    load_dotenv(root_env)
 
 USE_SEMANTIC_SEARCH = os.getenv("COURSUPREME_ENABLE_SEMANTIC", "0") == "1"
 
@@ -87,6 +91,58 @@ def parse_fuzzy_date(value, is_end=False):
     return '9999-12-31' if is_end else '1900-01-01'
 
 
+def normalize_decision_date_value(value: str | None) -> str | None:
+    """Normalise une date trouvée dans le texte vers YYYY-MM-DD si possible."""
+    if not value:
+        return None
+    raw = value.strip()
+    candidates = ['%d/%m/%Y', '%d-%m-%Y', '%Y-%m-%d', '%Y/%m/%d']
+    for fmt in candidates:
+        try:
+            dt = datetime.strptime(raw, fmt)
+            return dt.strftime('%Y-%m-%d')
+        except ValueError:
+            continue
+    # Gestion des jours à 0 (ex: 2021/04/0) -> on force le jour à 01
+    m = re.match(r'(\d{4})[/-](\d{2})[/-]0$', raw)
+    if m:
+        try:
+            dt = datetime.strptime(f"{m.group(1)}-{m.group(2)}-01", "%Y-%m-%d")
+            return dt.strftime('%Y-%m-%d')
+        except ValueError:
+            return None
+    return None
+
+
+def format_display_date(value: str | None) -> str:
+    """Retourne une date au format JJ-MM-AAAA pour l'affichage."""
+    if not value:
+        return ''
+    value = value.strip()
+    candidates = ['%d/%m/%Y', '%d-%m-%Y', '%Y-%m-%d', '%Y/%m/%d']
+    for fmt in candidates:
+        try:
+            dt = datetime.strptime(value, fmt)
+            return dt.strftime('%d-%m-%Y')
+        except ValueError:
+            continue
+    return value.replace('/', '-')
+
+
+def _parse_id_list(value: str) -> list[int]:
+    """Parse une liste d'ids séparés par virgule en entiers."""
+    ids = []
+    for part in (value or '').split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except ValueError:
+            continue
+    return ids
+
+
 FRENCH_INDEX_TABLE = 'french_keyword_index'
 FRENCH_INDEX_FIELDS = ['object_fr', 'summary_fr', 'title_fr']
 TOKEN_PATTERN = re.compile(r'[a-z0-9]+')
@@ -148,6 +204,36 @@ def tokenize_query_param(value: str) -> list:
 
 def get_decision_ids_for_token(cursor: sqlite3.Cursor, token: str) -> set:
     cursor.execute(f"SELECT decision_id FROM {FRENCH_INDEX_TABLE} WHERE token = ?", (token,))
+    return {row[0] for row in cursor.fetchall()}
+
+
+def get_decision_ids_for_classification(
+    cursor: sqlite3.Cursor,
+    column: str,
+    ids: list[int],
+    require_all: bool = False,
+) -> set:
+    """Récupère les décisions qui matchent un ensemble de chambres/thèmes.
+    require_all=True => l'entrée doit contenir TOUTES les valeurs fournies (AND via HAVING).
+    require_all=False => au moins une correspondance (IN).
+    """
+    if not ids:
+        return set()
+    placeholders = ','.join('?' for _ in ids)
+    if require_all:
+        cursor.execute(f"""
+            SELECT decision_id
+            FROM supreme_court_decision_classifications
+            WHERE {column} IN ({placeholders})
+            GROUP BY decision_id
+            HAVING COUNT(DISTINCT {column}) >= ?
+        """, (*ids, len(ids)))
+    else:
+        cursor.execute(f"""
+            SELECT DISTINCT decision_id
+            FROM supreme_court_decision_classifications
+            WHERE {column} IN ({placeholders})
+        """, ids)
     return {row[0] for row in cursor.fetchall()}
 
 
@@ -911,7 +997,7 @@ def batch_analyze():
         # Récupérer les décisions
         placeholders = ','.join('?' * len(decision_ids))
         cursor.execute(f"""
-            SELECT id, decision_number, html_content_ar, html_content_fr, 
+            SELECT id, decision_number, decision_date, html_content_ar, html_content_fr, 
                    download_status, summary_ar, summary_fr,
                    file_path_ar, file_path_fr
             FROM supreme_court_decisions
@@ -927,7 +1013,7 @@ def batch_analyze():
         to_analyze = []
         
         for dec in decisions:
-            dec_id, number, html_ar, html_fr, dl_status, sum_ar, sum_fr, file_ar, file_fr = dec
+            dec_id, number, dec_date, html_ar, html_fr, dl_status, sum_ar, sum_fr, file_ar, file_fr = dec
 
             available_ar = bool(html_ar) or (file_ar and file_exists(file_ar))
             available_fr = bool(html_fr) or (file_fr and file_exists(file_fr))
@@ -1008,6 +1094,7 @@ def batch_analyze():
 2. "title": titre court et descriptif
 3. "entities": liste d'objets {{"type": "person/institution/location/legal", "name": "..."}}
 4. "keywords": liste de 5-8 mots-clés juridiques importants
+5. "decision_date": date de la décision au format YYYY-MM-DD si elle est clairement identifiable, sinon null
 
 Décision:
 {text_ar}
@@ -1032,6 +1119,7 @@ Réponds UNIQUEMENT avec le JSON, sans texte avant ou après."""}
 2. "title": titre court et descriptif
 3. "entities": liste d'objets {{"type": "person/institution/location/legal", "name": "..."}}
 4. "keywords": liste de 5-8 mots-clés juridiques importants
+5. "decision_date": date de la décision au format YYYY-MM-DD si elle est clairement identifiable, sinon null
 
 Décision:
 {text_fr}
@@ -1046,10 +1134,17 @@ Réponds UNIQUEMENT avec le JSON, sans texte avant ou après."""}
                 fr_content = fr_content.replace('```json', '').replace('```', '').strip()
                 fr_json = json.loads(fr_content)
                 
+                # Déterminer une date à corriger si besoin
+                existing_date = normalize_decision_date_value(dec.get('decision_date') if isinstance(dec, dict) else dec_date)
+                ar_date = normalize_decision_date_value((ar_json or {}).get('decision_date')) if isinstance(ar_json, dict) else None
+                fr_date = normalize_decision_date_value((fr_json or {}).get('decision_date')) if isinstance(fr_json, dict) else None
+                chosen_date = existing_date or fr_date or ar_date
+
                 # Sauvegarder
                 cursor.execute("""
                     UPDATE supreme_court_decisions
-                    SET summary_ar = ?,
+                    SET decision_date = COALESCE(?, decision_date),
+                        summary_ar = ?,
                         summary_fr = ?,
                         title_ar = ?,
                         title_fr = ?,
@@ -1060,6 +1155,7 @@ Réponds UNIQUEMENT avec le JSON, sans texte avant ou après."""}
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                 """, (
+                    chosen_date,
                     ar_json.get('summary'),
                     fr_json.get('summary'),
                     ar_json.get('title'),
@@ -1364,6 +1460,29 @@ def get_chamber_all_ids(chamber_id):
         return jsonify({'error': str(e)}), 500
 
 
+@coursupreme_bp.route('/themes/all', methods=['GET'])
+def get_all_themes():
+    """Liste complète des thèmes avec leur chambre (pour autocomplétion)."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT t.id,
+                   t.name_ar,
+                   t.name_fr,
+                   t.chamber_id
+            FROM supreme_court_themes t
+            WHERE t.name_ar IS NOT NULL OR t.name_fr IS NOT NULL
+            ORDER BY t.chamber_id, t.id
+        """)
+        themes = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return jsonify({'themes': themes, 'count': len(themes)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @coursupreme_bp.route('/index/french/rebuild', methods=['POST'])
 def rebuild_french_index():
     """Regénérer l’index inversé français."""
@@ -1387,6 +1506,10 @@ def advanced_search():
     date_from = request.args.get('date_from', '')
     date_to = request.args.get('date_to', '')
     language_scope = request.args.get('language_scope', 'both')
+    chambers_inc = _parse_id_list(request.args.get('chambers_inc', ''))
+    chambers_or = _parse_id_list(request.args.get('chambers_or', ''))
+    themes_inc = _parse_id_list(request.args.get('themes_inc', ''))
+    themes_or = _parse_id_list(request.args.get('themes_or', ''))
 
     keywords_inc_tokens = tokenize_query_param(keywords_inc)
     keywords_or_tokens = tokenize_query_param(keywords_or)
@@ -1420,14 +1543,21 @@ def advanced_search():
         order_parts.append("decision_number ASC")
 
         candidate_ids = None
+        def intersect_ids(new_ids: set):
+            nonlocal candidate_ids
+            if new_ids is None:
+                return
+            if candidate_ids is None:
+                candidate_ids = set(new_ids)
+            else:
+                candidate_ids &= set(new_ids)
+            return candidate_ids
+
         if keywords_inc_tokens:
             for token in keywords_inc_tokens:
                 ids = get_decision_ids_for_token(cursor, token)
-                if candidate_ids is None:
-                    candidate_ids = ids
-                else:
-                    candidate_ids &= ids
-                if not candidate_ids:
+                intersect_ids(ids)
+                if candidate_ids is not None and not candidate_ids:
                     cursor.close()
                     conn.close()
                     return jsonify({'results': [], 'count': 0})
@@ -1436,11 +1566,24 @@ def advanced_search():
             or_ids = set()
             for token in keywords_or_tokens:
                 or_ids |= get_decision_ids_for_token(cursor, token)
-            if candidate_ids is None:
-                candidate_ids = or_ids
-            else:
-                candidate_ids &= or_ids
-            if not candidate_ids:
+            intersect_ids(or_ids if or_ids else set())
+            if candidate_ids is not None and not candidate_ids:
+                cursor.close()
+                conn.close()
+                return jsonify({'results': [], 'count': 0})
+
+        if chambers_inc:
+            ids = get_decision_ids_for_classification(cursor, "chamber_id", chambers_inc, require_all=True)
+            intersect_ids(ids)
+            if candidate_ids is not None and not candidate_ids:
+                cursor.close()
+                conn.close()
+                return jsonify({'results': [], 'count': 0})
+
+        if themes_inc:
+            ids = get_decision_ids_for_classification(cursor, "theme_id", themes_inc, require_all=True)
+            intersect_ids(ids)
+            if candidate_ids is not None and not candidate_ids:
                 cursor.close()
                 conn.close()
                 return jsonify({'results': [], 'count': 0})
@@ -1448,6 +1591,14 @@ def advanced_search():
         if candidate_ids is not None:
             where_clauses.append(f"id IN ({','.join('?' for _ in candidate_ids)})")
             params.extend(sorted(candidate_ids))
+
+        if chambers_or:
+            where_clauses.append(f"id IN (SELECT decision_id FROM supreme_court_decision_classifications WHERE chamber_id IN ({','.join('?' for _ in chambers_or)}))")
+            params.extend(chambers_or)
+
+        if themes_or:
+            where_clauses.append(f"id IN (SELECT decision_id FROM supreme_court_decision_classifications WHERE theme_id IN ({','.join('?' for _ in themes_or)}))")
+            params.extend(themes_or)
 
         if keywords_exc_tokens:
             exc_ids = set()
@@ -1466,12 +1617,12 @@ def advanced_search():
         order_sql = f"ORDER BY {', '.join(order_parts_processed)}" if order_parts_processed else f"ORDER BY {NORMALIZED_DECISION_DATE} DESC"
 
         query = f"""
-            SELECT id, decision_number, decision_date,
-                   object_ar, object_fr,
-                   summary_ar, summary_fr,
-                   title_ar, title_fr,
-                   file_path_ar, file_path_fr,
-                   html_content_ar, html_content_fr
+            SELECT id,
+                   decision_number,
+                   decision_date,
+                   object_ar,
+                   object_fr,
+                   url
             FROM supreme_court_decisions
             WHERE {where_sql}
             {order_sql}
@@ -1479,7 +1630,11 @@ def advanced_search():
         """
 
         cursor.execute(query, params + order_params)
-        candidates = [dict(row) for row in cursor.fetchall()]
+        candidates = []
+        for row in cursor.fetchall():
+            entry = dict(row)
+            entry['decision_date'] = format_display_date(entry.get('decision_date'))
+            candidates.append(entry)
         conn.close()
 
         return jsonify({'results': candidates, 'count': len(candidates)})
@@ -1493,6 +1648,7 @@ def semantic_search():
     query = request.args.get('q', '').strip()
     if not query:
         return jsonify({'error': 'Paramètre q requis'}), 400
+    terms = [part for part in re.split(r'\s+', query) if part]
 
     try:
         limit = int(request.args.get('limit', 10))
@@ -1530,10 +1686,25 @@ def semantic_search():
         fallback_rows = [dict(row) for row in fallback_cursor.fetchall()]
         return fallback_rows, len(fallback_rows)
 
+    # Si la requête ne contient qu'un seul mot, on privilégie une recherche texte simple.
+    if len(terms) == 1:
+        fallback_results, fallback_count = run_text_fallback(limit)
+        return jsonify({
+            'results': fallback_results[:limit],
+            'all_results': fallback_results,
+            'count': fallback_count,
+            'max_score': None,
+            'min_score': None,
+            'score_threshold': score_threshold,
+            'limit': limit,
+            'mode': 'keyword'
+        })
+
     if not USE_SEMANTIC_SEARCH:
         fallback_results, fallback_count = run_text_fallback(limit)
         return jsonify({
             'results': fallback_results,
+            'all_results': fallback_results,
             'count': fallback_count,
             'max_score': None,
             'min_score': None,
@@ -1563,49 +1734,42 @@ def semantic_search():
             raise RuntimeError("embedding model unavailable")
         query_vec = model.encode(query, convert_to_numpy=True)
 
-        scored = []
+        scored = []  # Scores calculés sur embeddings FR uniquement
         for row in rows:
-            best_score = None
-            if language_scope in ('fr', 'both'):
-                emb_fr = decode_embedding(row['embedding_fr'])
-                score = cosine_similarity(query_vec, emb_fr)
-                if score is not None:
-                    best_score = score if best_score is None else max(best_score, score)
-            if language_scope in ('ar', 'both'):
-                emb_ar = decode_embedding(row['embedding_ar'])
-                score = cosine_similarity(query_vec, emb_ar)
-                if score is not None:
-                    best_score = score if best_score is None else max(best_score, score)
-            if best_score is not None:
-                if best_score >= score_threshold:
-                    scored.append({
-                        'id': row['id'],
-                        'decision_number': row['decision_number'],
-                        'decision_date': row['decision_date'],
-                        'object_ar': row['object_ar'],
-                        'object_fr': row['object_fr'],
-                        'summary_ar': row['summary_ar'],
-                        'summary_fr': row['summary_fr'],
-                        'score': round(best_score, 4)
-                    })
+            emb_fr = decode_embedding(row['embedding_fr'])
+            score = cosine_similarity(query_vec, emb_fr)
+            if score is not None:
+                scored.append({
+                    'id': row['id'],
+                    'decision_number': row['decision_number'],
+                    'decision_date': row['decision_date'],
+                    'object_ar': row['object_ar'],
+                    'object_fr': row['object_fr'],
+                    'summary_ar': row['summary_ar'],
+                    'summary_fr': row['summary_fr'],
+                    'score': round(score, 4)
+                })
 
         scored.sort(key=lambda entry: entry['score'], reverse=True)
-        returned = scored[:limit]
-        if returned:
-            max_score = returned[0]['score']
-            min_score = returned[-1]['score']
+        filtered = [entry for entry in scored if entry['score'] >= score_threshold]
+        returned = filtered[:limit] if filtered else []
+
+        if scored:
             return jsonify({
                 'results': returned,
+                'all_results': scored,
                 'count': len(scored),
-                'max_score': max_score,
-                'min_score': min_score,
+                'max_score': scored[0]['score'],
+                'min_score': scored[-1]['score'],
                 'score_threshold': score_threshold,
-                'limit': limit
+                'limit': limit,
+                'mode': 'semantic'
             })
 
         fallback_results, fallback_count = run_text_fallback(limit)
         return jsonify({
             'results': fallback_results,
+            'all_results': fallback_results,
             'count': fallback_count,
             'max_score': None,
             'min_score': None,
@@ -1617,6 +1781,7 @@ def semantic_search():
         fallback_results, fallback_count = run_text_fallback(limit)
         return jsonify({
             'results': fallback_results,
+            'all_results': fallback_results,
             'count': fallback_count,
             'max_score': None,
             'min_score': None,

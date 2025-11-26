@@ -1,10 +1,12 @@
 from __future__ import annotations
-from flask import Blueprint, jsonify, request, redirect
+from flask import Blueprint, jsonify, request, redirect, send_file
 import sqlite3
 import json
 import io
 import os
 import requests
+import time
+import zipfile
 from functools import lru_cache
 from requests.adapters import HTTPAdapter
 from shared.r2_storage import (
@@ -974,6 +976,80 @@ def download_documents_batch(session_id):
             'failed': failed_count,
             'total': len(documents)
         })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@joradp_bp.route('/documents/export', methods=['POST'])
+def export_selected_documents():
+    """
+    Exporter plusieurs PDF téléchargés en un seul ZIP (via leurs URL R2).
+    """
+    try:
+        data = request.json or {}
+        document_ids = data.get('document_ids') or []
+        if not document_ids or not isinstance(document_ids, list):
+            return jsonify({'error': 'document_ids requis (liste)'}), 400
+
+        numeric_ids = []
+        for doc_id in document_ids:
+            try:
+                numeric_ids.append(int(doc_id))
+            except (TypeError, ValueError):
+                continue
+
+        if not numeric_ids:
+            return jsonify({'error': 'document_ids invalides'}), 400
+
+        placeholders = ','.join('?' * len(numeric_ids))
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT id, url, file_path
+            FROM documents
+            WHERE id IN ({placeholders})
+              AND file_path IS NOT NULL
+              AND download_status = 'success'
+            """,
+            numeric_ids
+        )
+        docs = cursor.fetchall()
+        conn.close()
+
+        if not docs:
+            return jsonify({'error': 'Aucun PDF disponible pour les IDs fournis'}), 404
+
+        buffer = io.BytesIO()
+        added = 0
+        with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+            for row in docs:
+                raw_url = row['file_path']
+                if not raw_url:
+                    continue
+                signed = generate_presigned_url(raw_url, expires_in=600) or build_public_url(raw_url)
+                if not signed:
+                    continue
+                try:
+                    resp = _R2_SESSION.get(signed, timeout=30)
+                    resp.raise_for_status()
+                    filename = raw_url.split('/')[-1] or f'doc-{row["id"]}.pdf'
+                    archive.writestr(filename, resp.content)
+                    added += 1
+                except Exception as exc:
+                    print(f"⚠️  Export ZIP: échec doc {row['id']} - {exc}")
+                    continue
+
+        if added == 0:
+            return jsonify({'error': 'Aucun fichier exporté (accès R2 ou URLs invalides)'}), 400
+
+        buffer.seek(0)
+        download_name = f"joradp-documents-{int(time.time())}.zip"
+        try:
+            return send_file(buffer, as_attachment=True, download_name=download_name, mimetype='application/zip')
+        except TypeError:
+            return send_file(buffer, as_attachment=True, attachment_filename=download_name, mimetype='application/zip')
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
